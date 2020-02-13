@@ -1,0 +1,457 @@
+<html>
+	<head>
+
+		<title>Easy ingest in ELK</title>
+		<script type = "text/javascript" src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+		<script type = "text/javascript" src = "https://cdnjs.cloudflare.com/ajax/libs/elasticsearch/16.6.0/elasticsearch.jquery.min.js"></script>
+		<style>
+			body { text-align: center; }
+			input { margin: 3px; }
+			table.center {
+				margin-left:auto; 
+				margin-right:auto;
+			}
+			.logs {
+				display: table;
+				background-color: #e8e9ff;
+				border: solid thin #040035;
+				border-radius: 5px;
+				padding: 5px 40px;
+				margin-left: auto;
+				margin-right: auto;
+			}
+			.code {
+				background-color: #dddddd;
+				border: solid thin #222222;
+				border-radius: 5px;
+				padding: 5px;
+			}
+			.lsconf {
+				display: table;
+				background-color: #dddddd;
+				border: solid thin #222222;
+				border-radius: 5px;
+				padding: 5px 30px;
+				margin-left: auto;
+				margin-right: auto;
+				text-align: left;
+			}			
+		</style>
+	</head>
+
+	<body>
+		<h1>Easy ingest</h1>
+		<p>Ingest easily in Elasticsearch!<br/>Select your fields, name and type them.<br/><i>Tip</i>: right click to delete a field!</p>
+		<br/><br/><br/>
+		Easy query from Elasticsearch:<br/>
+		Protocol: <input type='text' id='esproto' value='https' size='5'> Host: <input type='text' id='eshost' value='hostname' size='12'> and 
+		Port: <input type='text' id='esport' value='9200' size='4'><br/>
+		User: <input type='text' id='esuser' value='elastic' size='8'> and Password: <input type='text' id='espwd' value='pwd' size='8'><br/>
+		Index: <input type='text' id='esindex' value='kibana_sample_data_logs' size='12'> and Field: <input type='text' id='esfld' value='message' size='12'><br/>
+		<input type="button" value="Test" id="test">&nbsp;&nbsp;<input type="button" value="Fetch" id="fetch">
+		<br/><br/>
+		<div id="logs" class="logs">127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326 "http://www.example.com/start.html" "Mozilla/4.08 [en] (Win98; I ;Nav)"</div>
+		<br/>
+		<input type="button" value="Edit" id="edit">
+		<input type="button" value="Reset" id="reset">
+		<br/><br/>
+		<div id="fields"></div>
+		<br/><br/>
+		<div id="dissect"></div>
+		<br/><br/>
+		<div id="lsconfig"></div>
+
+		<script>
+			var spans = {};
+			var fields = {};
+			var logs = $("#logs").text().trim();
+			var colors = ["#17A8E0", "#FED10A", "#24BBB1", "#EF5098", "#0779A1", "#93C83E"];
+			var lsTypes = {"text": "string", "integer": "integer", "float": "float", "ip": "string", "date": "string"};
+
+			$(document).ready(function() {
+				// disable context menu
+				$("body").bind('contextmenu', function (e) { return false; });
+			});
+
+			// test connection
+			$( "#test" ).click(function() {
+				var client = new $.es.Client({
+					host: [
+						{
+						host: $("#eshost").val().trim(),
+						auth: $("#esuser").val().trim() + ':' + $("#espwd").val().trim(),
+						protocol: $("#esproto").val().trim(),
+						port: $("#esport").val().trim()
+						}
+					]
+				});
+				client.ping({
+					requestTimeout: 30000,
+					}, function (error) {
+					if (error) {
+						console.error('elasticsearch cluster is down!');
+						alert("Connection error. Try setting (in elasticsearch.yml): http.cors.enabled: true, http.cors.allow-origin: \"*\", http.cors.allow-headers: \"X-Requested-With, Content-Type, Content-Length, Authorization\". Caution: this may bring security issues, see https://www.elastic.co/guide/en/elasticsearch/reference/master/modules-http.html");
+					} else {
+						console.log('All is well');
+						alert("Working fine!");
+					}
+				});
+			});
+
+			// Fetch data
+			$( "#fetch" ).click(function() {
+				var client = new $.es.Client({
+					host: [
+						{
+						host: $("#eshost").val().trim(),
+						auth: $("#esuser").val().trim() + ':' + $("#espwd").val().trim(),
+						protocol: $("#esproto").val().trim(),
+						port: $("#esport").val().trim()
+						}
+					]
+				});
+				var mySeed = String(Number(Math.random()*1477072619038));
+				client.search({
+					index: $("#esindex").val().trim(),
+					size: 1,
+					body: {query: { function_score: { functions: [{ random_score: {seed: mySeed}}]}}}
+					// body: { foo: 'bar' }
+					}, (err, result) => {
+					if (err) {console.log(err);} else {
+						if (typeof result.hits.hits[0]._source[$("#esfld").val().trim()] == "string") {
+							console.log(result.hits.hits[0]._source[$("#esfld").val().trim()].trim());
+							resetItAll(result.hits.hits[0]._source[$("#esfld").val().trim()].trim());
+						} else {
+							console.log(result);
+							alert ("Could not retrieve the message, see console for response dump.");
+						}
+					}
+				});
+			});
+
+			// detect right click on span to delete it
+			$(document).on('mouseup', 'span', function () {
+				if (event.which == 3) {
+					sid = Number(this.id.replace("span",""))
+					deleteField(sid);
+				}
+				return false;
+			});	
+			// capture double click
+			$( "#logs" ).dblclick(function() {
+			});
+			// detect mouse down in the middle of a span to delete it?
+			$( "#logs" ).mousedown(function() {
+			});
+			// left mouse up to select a new field
+			$( "#logs" ).mouseup(function() {
+				if (event.which == 1) {
+					addField();
+				}
+			});
+			// edit the log line
+			$( "#edit" ).click(function() {
+				resetItAll("<input type='text' id='logEdit' size=100 value='" + $("#logs").text().trim() + "'/>");
+			});
+			// save on change
+			$(document).on('change', '#logEdit', function () {
+				resetItAll($("#logEdit").val().trim());
+				return false;
+			});	
+			// field name change
+			$( "#reset" ).click(function() {
+				resetItAll("127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326 \"http://www.example.com/start.html\" \"Mozilla/4.08 [en] (Win98; I ;Nav)\"");
+			});
+			// field name change
+			$(document).on('change', '.fldname', function() { 
+				// record the names and update
+				$('.fldname').each(function() {
+					fields[this.id].name = $(this).val();
+				}); 
+				updateLogsHighlight();
+				updateFieldList();
+				updateDissect();
+				updateLsConfig();
+           });
+			// field type change
+			$(document).on('change', '.fldtype', function() { 
+				// record the types and update
+				$('.fldtype').each(function() {
+					fields[this.id].type = $(this).val();
+				}); 
+				updateLogsHighlight();
+				updateFieldList();
+				updateDissect();
+				updateLsConfig();
+            });
+
+
+			// add a field
+			function addField() {
+				// get the selection begining and end
+				var sel = getSelectionCharOffsetsWithin(document.getElementById("logs"));
+				if (sel.end > sel.start) {
+					// check if start or end in an existing span. if so, erase it first
+					for (var s in spans) {
+						if ((sel.start > s && sel.start < spans[s]) || (sel.end > s && sel.end < spans[s])) {
+							deleteField(s);
+						}
+					};
+					// if double click included a last space, remove it
+					if (logs.substring(sel.end-1,sel.end) == " ") {sel.end--;}
+					// still something?
+					if (sel.end > sel.start) {
+						// add the new span and update
+						spans[sel.start] = sel.end;
+						// deselect text
+						if (window.getSelection) {window.getSelection().removeAllRanges();}
+						else if (document.selection) {document.selection.empty();}
+						updateLogsHighlight();
+						// add a new entry in the field list, text by default
+						fields[sel.start] = {"text": $("span#span"+sel.start).text(), "name": "fld"+sel.start, "type": "text"};
+						// try to narrow the field type
+						// for date formats, see https://www.elastic.co/guide/en/elasticsearch/reference/7.5/search-aggregations-bucket-daterange-aggregation.html#date-format-pattern
+						console.log("Field to match: ---" + fields[sel.start].text + "---");
+						if (fields[sel.start].text.match(/((^\s*((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))\s*$)|(^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))(%.+)?\s*$))/)) {
+							fields[sel.start].type = "ip";
+						} else if (fields[sel.start].text.match(/^[0-9]+$/)) {
+							fields[sel.start].type = "integer";
+						} else if (fields[sel.start].text.match(/^[0-9]*\.[0-9]+$/)) {
+							fields[sel.start].type = "float";
+						} else if (fields[sel.start].text.match(/^\d{2}\/[A-Z][a-z]{2}\/\d{4}:\d{2}:\d{2}:\d{2}\s[0-9\+\-:]+$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "dd/MMM/YYYY:HH:mm:ss Z";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d{2}\s\d{2}:\d{2}\s[A-Z]{3}\s\d{4}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "EEE MMM dd HH:mm zzz YYYY";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d{2}\s\d{2}:\d{2}:\d{2}\s\d{4}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "EEE MMM dd HH:mm:ss YYYY";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d{2}\s\d{2}:\d{2}:\d{2}\s[A-Z]{3}\s\d{4}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "EEE MMM dd HH:mm:ss zzz YYYY";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d{2}\s\d{4}\s\d{2}:\d{2}\s[A-Z]{3}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "EEE MMM dd YYYY HH:mm zzz";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d{2}\s\d{4}\s\d{2}:\d{2}:\d{2}\s[A-Z]{3}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "EEE MMM dd YYYY HH:mm:ss zzz";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2},\s\d{2}\s[A-Z][a-z]{2}\s\d{4}\s\d{2}:\d{2}\s[0-9\+\-:]+$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "EEE, dd MMM YYYY HH:mm Z"; 
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2},\s\d{2}\s[A-Z][a-z]{2}\s\d{4}\s\d{2}:\d{2}:\d{2}\s[0-9\+\-:]+$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "EEE, dd MMM YYYY HH:mm:ss Z";
+						} else if (fields[sel.start].text.match(/^\d{4}\-\d{2}\-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "ISO8601";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s\s\d\s\d{2}:\d{2}:\d{2}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "MMM  d HH:mm:ss";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s\s\d\s\d{2}:\d{2}:\d{2},\d{3}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "MMM  d HH:mm:ss,SSS";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s\s\d\s\d{4}\s\d{2}:\d{2}:\d{2}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "MMM  d YYYY HH:mm:ss";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s\d{2}\s\d{2}:\d{2}:\d{2}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "MMM dd HH:mm:ss";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s\d{2}\s\d{2}:\d{2}:\d{2},\d{3}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "MMM dd HH:mm:ss,SSS";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s\d{2}\s\d{4}\s\d{2}:\d{2}:\d{2}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "MMM dd YYYY HH:mm:ss";
+						} else if (fields[sel.start].text.match(/^[A-Z][a-z]{2}\s\d{2},\s\d{4}\s\d{1,2}:\d{2}:\d{2}\s[AP]M$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "MMM dd, YYYY h:mm:ss a";
+						} else if (fields[sel.start].text.match(/^\d{10}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "UNIX";
+						} else if (fields[sel.start].text.match(/^\d{10}\.\d{3}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "UNIX";
+						} else if (fields[sel.start].text.match(/^\d{13}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "UNIX_MS";
+						} else if (fields[sel.start].text.match(/^\d{4}\-\d{2}\-\d{2}\s\d{2}:\d{2}:\d{2}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "YYYY-MM-dd HH:mm:ss";
+						} else if (fields[sel.start].text.match(/^\d{4}\-\d{2}\-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "YYYY-MM-dd HH:mm:ss,SSS";
+						} else if (fields[sel.start].text.match(/^\d{4}\-\d{2}\-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}\s[0-9\+\-:]+$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "YYYY-MM-dd HH:mm:ss,SSS Z";
+						} else if (fields[sel.start].text.match(/^\d{4}\-\d{2}\-\d{2}\s\d{2}:\d{2}:\d{2},\d{3}[0-9\+\-:]+$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "YYYY-MM-dd HH:mm:ss,SSSZ";
+						} else if (fields[sel.start].text.match(/^\d{4}\-\d{2}\-\d{2}\s\d{2}:\d{2}:\d{2}[0-9\+\-:]+$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "YYYY-MM-dd HH:mm:ssZ";
+						} else if (fields[sel.start].text.match(/^\d{4}\d{2}\d{2}\d{2}\d{2}\d{2}$/)) {
+							fields[sel.start].type = "date"; fields[sel.start].dateFormat = "YYYYMMddHHmmss";
+						}
+						updateFieldList();
+						// auto select the field name to ease input
+						$('.fldname#'+sel.start).select();
+						updateDissect();
+						updateLsConfig();
+					}
+				}
+			}
+
+			// delete a field
+			function deleteField(s) {
+				delete spans[s];
+				updateLogsHighlight();
+				delete fields[s];
+				updateFieldList();
+				updateDissect();
+				updateLsConfig();
+			}
+
+			// update logs line
+			function updateLogsHighlight() {
+				// if there is something to display
+				if (Object.keys(spans).length > 0) {
+					// compute the new line
+					var newLogs = ""; prevEnd = 0; iCol = 0;
+					for (var s in spans) {
+						newLogs = newLogs + logs.substring(prevEnd,s).replace(" ","&nbsp;") + "<span id=span" + s + " style='background-color:" + colors[iCol%colors.length] + "'>" + logs.substring(s,spans[s]).replace(" ","&nbsp;") + "</span>";
+						prevEnd = spans[s]; iCol++;
+					};
+					// finish the line
+					newLogs = newLogs + logs.substring(prevEnd,logs.length);
+					// update the logs html
+					$('#logs').html(newLogs); 
+				} else {
+					// simply set the text as html
+					$('#logs').html($("#logs").text());
+				}
+			}
+
+			// update the display of the fields
+			function updateFieldList() {
+				// if there is something to display
+				if (Object.keys(fields).length > 0) {
+					// compute the new list
+					var fldList = "<table class='center'><thead><tr><th>Text</th><th>Name</th><th>Type</th><th>Format</th></tr></thead><tbody>"; 
+					iCol = 0;
+					for (var f in fields) {
+						intSelected = ""; floatSelected = ""; IPSelected = ""; dateSelected = ""; dateFormat = ""
+						if (fields[f].type == "integer") {intSelected = " selected";}
+						if (fields[f].type == "float") {floatSelected = " selected";}
+						if (fields[f].type == "ip") {IPSelected = " selected";}
+						if (fields[f].type == "date") {dateSelected = " selected"; dateFormat = fields[f].dateFormat;}
+						fldList = fldList + "<tr><td><span id=fld" + f + " style='background-color:" + colors[iCol%colors.length] + "'>" + fields[f].text + "</span></td>" + 
+							"<td><input type='text' class='fldname' id='" + f + "' value='" + fields[f].name + "' size='12'></td>" +
+							"<td><select class='fldtype' id='" + f + "'><option value='text'>Text</option><option value='integer'" + intSelected + ">Integer</option><option value='float'" + floatSelected + ">Float</option>" +
+							"<option value='ip'" + IPSelected + ">IP</option><option value='date'" + dateSelected + ">Date</option></select></td>" +
+							"<td>" + dateFormat + "</td></tr>";
+						iCol++;
+					};
+					fldList = fldList + "</tbody></table>";
+					// update the fields html
+					$('#fields').html(fldList); 
+				} else {
+					// simply set the text as html
+					$('#fields').html("");
+				}
+			}
+
+			// compute the dissect
+			function updateDissect() {
+				// if there is something to display
+				if (Object.keys(fields).length > 0) {
+					// compute the new line
+					var dissect = "<p>This is the dissect mapping:</p><span class='code'>"; prevEnd = 0;
+					for (var f in fields) {
+						dissect = dissect + logs.substring(prevEnd,f) + "%{" + fields[f].name + "}";
+						prevEnd = spans[f];
+					}
+					// finish the line
+					dissect = dissect + logs.substring(prevEnd,logs.length) + "</span>&nbsp;&nbsp;<input type='button' value='Copy' onclick='copyDissectToClipboard();'>";
+					// update the dissect html
+					$('#dissect').html(dissect); 
+				} else {
+					// simply set the text as html
+					$('#dissect').html("");
+				}
+			}
+
+			// compute the dissect
+			function updateLsConfig() {
+				// if there is something to display
+				if ($('#dissect').text().length > 0) {
+					lsConf = "<p>This is a Logstash configuration sample:</p><div class='lsconf'>";
+					lsConf = lsConf + buildLsConfig("<br/>", "&emsp;");
+					lsConf = lsConf + "</div><br/><input type='button' value='Copy' onclick='copyLsConfigToClipboard();'>";
+					// update the lsconf html
+					$('#lsconfig').html(lsConf); 
+				} else {
+					// simply set the text as html
+					$('#lsconfig').html("");
+				}
+			}
+
+			// buid ls config file
+			function buildLsConfig(cr,t) {
+				// find the first date field (should be the event timestamp)
+				dateFld = ""; dateFormat = "";
+				for (var f in fields) {
+					if (fields[f].type == "date") {dateFld = fields[f].name; dateFormat = fields[f].dateFormat; break;}
+				}
+				conf = "input {"+cr+t+"generator {"+cr+t+t+"count => 1"+cr+t+t+"message => \"" + logs.split("\"").join("\\\"") + "\""+cr+t+"}"+cr+"}"+cr+cr;
+				conf = conf + "filter {"+cr+t+"dissect {"+cr+t+t+"mapping => { \"message\" => \""+$('#dissect').text().replace("This is the dissect mapping:","").trim().split("\"").join("\\\"")+"\" }"+cr+t+"}"+cr;
+				if (dateFld != "") {
+					conf = conf + t+"date { match => [ \""+dateFld+"\", \""+dateFormat+"\" ] }"+cr;
+				}
+				conf = conf + "}"+cr+cr;
+				conf = conf + "filter {"+cr+t+"mutate {"+cr+t+t+"convert => {"+cr
+				for (var f in fields) {
+					conf = conf + t+t+t+"\"" + fields[f].name + "\" => \"" + lsTypes[fields[f].type] + "\"" + cr;
+				}
+				conf = conf + t+t+"}"+cr+t+"}"+cr+"}"+cr+cr
+				conf = conf + "output {"+cr+t+"stdout {"+cr+t+t+"codec => rubydebug"+cr+t+"}"+cr+"}";
+				return conf;
+			}
+
+			// reset all
+			function resetItAll(s) {
+				spans = {};
+				updateLogsHighlight();
+				fields = {};
+				updateFieldList();
+				updateDissect();
+				updateLsConfig();
+				$("#logs").html(s.trim());
+				logs = $("#logs").text().trim();
+			}
+
+			// Get the begining and end offset of the string
+			function getSelectionCharOffsetsWithin(element) {
+				var start = 0, end = 0;
+				var sel, range, priorRange;
+				if (typeof window.getSelection != "undefined") {
+					range = window.getSelection().getRangeAt(0);
+					priorRange = range.cloneRange();
+					priorRange.selectNodeContents(element);
+					priorRange.setEnd(range.startContainer, range.startOffset);
+					start = priorRange.toString().length;
+					end = start + range.toString().length;
+				} else if (typeof document.selection != "undefined" &&
+						(sel = document.selection).type != "Control") {
+					range = sel.createRange();
+					priorRange = document.body.createTextRange();
+					priorRange.moveToElementText(element);
+					priorRange.setEndPoint("EndToStart", range);
+					start = priorRange.text.length;
+					end = start + range.text.length;
+				}
+				return {
+					start: start,
+					end: end
+				};
+			}
+
+			// copy dissect to clipboard
+			function copyDissectToClipboard() {
+				const el = document.createElement('textarea');
+				el.value = $('#dissect').text().replace("This is the dissect mapping:","").trim();
+				document.body.appendChild(el);
+				el.select();
+				document.execCommand('copy');
+				document.body.removeChild(el);
+			}
+			// copy lsConfig to clipboard
+			function copyLsConfigToClipboard() {
+				const el = document.createElement('textarea');
+				el.value = buildLsConfig("\r\n","\t");
+				document.body.appendChild(el);
+				el.select();
+				document.execCommand('copy');
+				document.body.removeChild(el);
+			}
+
+		</script>
+
+	</body>
+</html>
