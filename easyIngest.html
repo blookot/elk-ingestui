@@ -26,16 +26,51 @@
 				border-radius: 5px;
 				padding: 5px;
 			}
+			#lsconfig {
+				float: left;
+				box-sizing: border-box;
+				width: 49%;
+				padding: 20px;
+			}
+			#esconfig {
+				float: right;
+				box-sizing: border-box;
+				width: 49%;
+				padding: 20px;
+			}
 			.lsconf {
 				display: table;
 				background-color: #dddddd;
 				border: solid thin #222222;
 				border-radius: 5px;
 				padding: 5px 30px;
-				margin-left: auto;
-				margin-right: auto;
 				text-align: left;
-			}			
+			}
+			/* #lsconfig {
+				float: left;
+				margin-left: 2%;
+				margin-right: 55%;
+			} */
+			.verticalLine {
+				height: 100%;
+				border-left: 2px solid black;
+				position: absolute;
+				left: 50%;
+				margin-top: 30px;
+			}
+			.esconf {
+				display: table;
+				background-color: #dddddd;
+				border: solid thin #222222;
+				border-radius: 5px;
+				padding: 5px 30px;
+				text-align: left;
+			}
+			/* #esconfig {
+				float: left;
+				margin-left: 55%;
+				margin-right: 2%;
+			} */
 		</style>
 	</head>
 
@@ -60,6 +95,8 @@
 		<div id="dissect"></div>
 		<br/><br/>
 		<div id="lsconfig"></div>
+		<div class="verticalLine">&nbsp;</div>
+		<div id="esconfig"></div>
 
 		<script>
 			var spans = {};
@@ -172,6 +209,7 @@
 				updateFieldList();
 				updateDissect();
 				updateLsConfig();
+				updateEsConfig();
            });
 			// field type change
 			$(document).on('change', '.fldtype', function() { 
@@ -183,6 +221,7 @@
 				updateFieldList();
 				updateDissect();
 				updateLsConfig();
+				updateEsConfig();
             });
 
 
@@ -274,6 +313,7 @@
 						$('.fldname#'+sel.start).select();
 						updateDissect();
 						updateLsConfig();
+						updateEsConfig();
 					}
 				}
 			}
@@ -286,6 +326,7 @@
 				updateFieldList();
 				updateDissect();
 				updateLsConfig();
+				updateEsConfig();
 			}
 
 			// update logs line
@@ -394,6 +435,58 @@
 				return conf;
 			}
 
+			// compute the elasticsearch part
+			function updateEsConfig() {
+				// if there is something to display
+				if ($('#dissect').text().length > 0) {
+					esConf = "<p>This is an Elasticsearch ingest pipeline configuration sample<br/>(that you can paste in your Kibana dev tools)<br/>Note: you can replace [this_source_pipeline] and [this_source] by the names you want!</p><div class='esconf'>";
+					esConf = esConf + buildEsConfig("<br/>", "&emsp;");
+					esConf = esConf + "</div><br/><input type='button' value='Copy' onclick='copyEsConfigToClipboard();'>";
+					// update the lsconf html
+					$('#esconfig').html(esConf); 
+				} else {
+					// simply set the text as html
+					$('#esconfig').html("");
+				}
+			}
+
+			// buid ES config file
+			function buildEsConfig(cr,t) {
+				// find the first date field (should be the event timestamp)
+				dateFld = ""; dateFormat = "";
+				for (var f in fields) {
+					if (fields[f].type == "date") {dateFld = fields[f].name; dateFormat = fields[f].dateFormat; break;}
+				}
+				// clear everything first
+				conf = "# clean everything first"+cr+"DELETE _ingest/pipeline/this_source_pipeline"+cr+"DELETE this_source"+cr+cr
+				// make the mapping
+				conf = conf+"# add data types in index mapping"+cr+"PUT /this_source"+cr+"{"+cr+t+"\"settings\": {"+cr+t+t+"\"index\": {"+cr+t+t+t+"\"default_pipeline\": \"this_source_pipeline\""+cr+t+t+"}"+cr+t+"},"+cr
+				conf = conf+t+"\"mappings\": {"+cr+t+t+"\"properties\": {"+cr+t+t+t+"\"@timestamp\": { \"type\": \"date\" }"
+				for (var f in fields) {
+					if (fields[f].name == dateFld) {
+						conf = conf + ","+cr+t+t+t+"\"" + dateFld + "\": { \"type\": \"date\", \"format\": \"" + dateFormat + "\" }";
+					} else {
+						conf = conf + ","+cr+t+t+t+"\"" + fields[f].name + "\": { \"type\": \"" + fields[f].type + "\" }";
+					}
+				}
+				conf = conf+cr+t+t+"}"+cr+t+"}"+cr+"}"+cr+cr
+				// build the config
+				conf = conf+"# ingest pipeline definition"+cr+"PUT _ingest/pipeline/this_source_pipeline"+cr+"{"+cr+t+"\"description\": \"Process the logs of this source\","+cr+t;
+				conf = conf+"\"processors\": ["+cr+t+t+"{"+cr+t+t+t+"\"dissect\": {"+cr+t+t+t+t+"\"field\": \"message\","+cr+t+t+t+t;
+				conf = conf+"\"pattern\": \""+$('#dissect').text().replace("This is the dissect mapping:","").trim().split("\"").join("\\\"")+"\""+cr+t+t+t+"}"+cr;
+				if (dateFld != "") {
+					conf = conf+t+t+"},{"+cr+t+t+t+"\"date\": {"+cr+t+t+t+t+"\"field\": \""+dateFld+"\","+cr+t+t+t+t+"\"formats\": [\""+dateFormat+"\"]"+cr+t+t+t+"}"+cr+t+t+"}"+cr;
+				} else {
+					conf = conf+t+t+"}"+cr;
+				}
+				conf = conf+t+"]"+cr+"}"+cr;
+				// add an example
+				conf = conf+cr+"# send one log through the pipeline"+cr+"PUT this_source/_doc/0?pipeline=this_source_pipeline"+cr+"{"+cr+t+"\"message\": \""+ logs.split("\"").join("\\\"") +"\""+cr+"}"+cr+cr;
+				// get the result
+				conf = conf+"# see the result"+cr+"GET this_source/_doc/0"+cr
+				return conf;
+			}
+
 			// reset all
 			function resetItAll(s) {
 				spans = {};
@@ -402,6 +495,7 @@
 				updateFieldList();
 				updateDissect();
 				updateLsConfig();
+				updateEsConfig();
 				$("#logs").html(s.trim());
 				logs = $("#logs").text().trim();
 			}
@@ -445,6 +539,15 @@
 			function copyLsConfigToClipboard() {
 				const el = document.createElement('textarea');
 				el.value = buildLsConfig("\r\n","\t");
+				document.body.appendChild(el);
+				el.select();
+				document.execCommand('copy');
+				document.body.removeChild(el);
+			}
+			// copy esConfig to clipboard
+			function copyEsConfigToClipboard() {
+				const el = document.createElement('textarea');
+				el.value = buildEsConfig("\r\n","\t");
 				document.body.appendChild(el);
 				el.select();
 				document.execCommand('copy');
